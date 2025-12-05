@@ -1,4 +1,5 @@
 import os
+import io
 import base64
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -6,6 +7,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
 from openai import OpenAI
 from dotenv import load_dotenv
+
+from PIL import Image
+import imageio.v2 as imageio
 
 # =========================
 # .env 로 환경변수 로드 (로컬 개발용)
@@ -89,8 +93,18 @@ if not GPT_API_KEY:
 
 client = OpenAI(api_key=GPT_API_KEY)
 
-# 이미지 기본 모델
-IMAGE_MODEL = "gpt-image-1"  # 현재 images API가 지원하는 최신 모델
+# =========================
+# 이미지 / 영상 모델 프리셋
+# =========================
+IMAGE_MODELS = {
+    "OpenAI gpt-image-1": "gpt-image-1",
+    # 향후 다른 이미지 모델 추가 가능
+}
+
+VIDEO_MODELS = {
+    "이미지 시퀀스 → MP4 (로컬 합성)": "local_sequence_mp4",
+    # 향후 AI 비디오 모델 추가 가능
+}
 
 # =========================
 # 스타일 프리셋 정의
@@ -126,10 +140,17 @@ st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("login_id", "")
 st.session_state.setdefault("scenes", [])
 st.session_state.setdefault("raw_script", "")
+
 st.session_state.setdefault("style_preset", "다큐 + 스틱맨 설명 캐릭터")
 st.session_state.setdefault("lock_character", True)
+
+st.session_state.setdefault("image_model_label", "OpenAI gpt-image-1")
 st.session_state.setdefault("image_orientation", "정사각형 1:1 (1024x1024)")
 st.session_state.setdefault("image_quality", "low")
+
+st.session_state.setdefault("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
+st.session_state.setdefault("seconds_per_scene", 3.0)
+st.session_state.setdefault("video_bytes", None)
 
 # =========================
 # 로그인 화면
@@ -267,8 +288,11 @@ def generate_image(prompt: str):
     size, quality = get_image_params()
     full_prompt = build_full_prompt(prompt)
 
+    image_model_label = st.session_state.get("image_model_label", "OpenAI gpt-image-1")
+    model = IMAGE_MODELS.get(image_model_label, "gpt-image-1")
+
     resp = client.images.generate(
-        model=IMAGE_MODEL,
+        model=model,
         prompt=full_prompt,
         size=size,
         quality=quality,  # low / high
@@ -296,20 +320,61 @@ def b64_to_bytes(b64_str: str):
     return base64.b64decode(b64_str)
 
 
+def create_video_from_scenes(scenes, seconds_per_scene: float, fps: int = 30) -> bytes | None:
+    """
+    이미지가 들어있는 scenes 리스트를 사용해 MP4 영상을 생성하고, 영상의 바이너리(bytes)를 반환.
+    scene["image_b64"] 가 있는 항목만 사용.
+    """
+    images = []
+    for scene in scenes:
+        if not scene.get("image_b64"):
+            continue
+        img_bytes = b64_to_bytes(scene["image_b64"])
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        images.append(img)
+
+    if not images:
+        return None
+
+    frames_per_scene = max(1, int(seconds_per_scene * fps))
+
+    output_path = "aniking_output.mp4"
+    writer = imageio.get_writer(output_path, fps=fps)
+    for img in images:
+        frame = imageio.asarray(img)
+        for _ in range(frames_per_scene):
+            writer.append_data(frame)
+    writer.close()
+
+    with open(output_path, "rb") as f:
+        return f.read()
+
+
 # =========================
-# 사이드바 (스타일 / 옵션 / 로그아웃)
+# 사이드바 (스타일 / 옵션 / 모델 / 로그아웃)
 # =========================
 with st.sidebar:
     st.markdown("### 🎬 AI 애니메이션 메이커")
     st.write(f"👤 로그인: **{st.session_state.get('login_id', '')}**")
     st.markdown("---")
 
+    # 이미지 생성 모델 선택
+    st.markdown("#### 🖼 이미지 생성 모델")
+    st.session_state["image_model_label"] = st.selectbox(
+        "이미지 생성 모델",
+        list(IMAGE_MODELS.keys()),
+        index=list(IMAGE_MODELS.keys()).index(
+            st.session_state.get("image_model_label", "OpenAI gpt-image-1")
+        ),
+    )
+
     st.markdown("#### 🎨 스타일 프리셋")
     st.session_state["style_preset"] = st.selectbox(
         "스타일 선택",
         list(STYLE_PRESETS.keys()),
-        index=list(STYLE_PRESETS.keys()).index(st.session_state.get("style_preset", "다큐 + 스틱맨 설명 캐릭터")),
-        label_visibility="collapsed",
+        index=list(STYLE_PRESETS.keys()).index(
+            st.session_state.get("style_preset", "다큐 + 스틱맨 설명 캐릭터")
+        ),
     )
 
     st.markdown("#### 🧍 캐릭터 고정")
@@ -334,11 +399,29 @@ with st.sidebar:
         horizontal=True,
     )
 
+    st.markdown("#### 🎥 영상 생성 옵션")
+    st.session_state["video_model_label"] = st.selectbox(
+        "영상 생성 모델",
+        list(VIDEO_MODELS.keys()),
+        index=list(VIDEO_MODELS.keys()).index(
+            st.session_state.get("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
+        ),
+    )
+
+    st.session_state["seconds_per_scene"] = st.slider(
+        "장면당 영상 길이 (초)",
+        min_value=1.0,
+        max_value=10.0,
+        value=float(st.session_state.get("seconds_per_scene", 3.0)),
+        step=0.5,
+    )
+
     st.markdown("---")
     if st.button("로그아웃"):
         st.session_state["logged_in"] = False
         st.session_state["scenes"] = []
         st.session_state["raw_script"] = ""
+        st.session_state["video_bytes"] = None
         st.rerun()
 
 # =========================
@@ -353,8 +436,8 @@ st.markdown(
         </div>
         <div class="main-title">AI 애니메이션 메이커</div>
         <div class="main-subtitle">
-            대본을 입력하고, 문장별 프롬프트를 기반으로 이미지를 벌크로 생성하세요.
-            이후 음성·영상까지 확장할 수 있습니다.
+            대본을 입력하고, 문장별 프롬프트를 기반으로 이미지를 벌크로 생성한 뒤,
+            장면들을 이어붙여 영상까지 자동으로 만들어보세요.
         </div>
     </div>
     """,
@@ -372,7 +455,7 @@ col_btn1, col_btn2 = st.columns(2)
 with col_btn1:
     clicked_generate = st.button("이미지 생성", type="primary", use_container_width=True)
 with col_btn2:
-    st.button("영상 생성 (준비 중)", disabled=True, use_container_width=True)
+    clicked_video = st.button("영상 생성", type="secondary", use_container_width=True)
 
 # =========================
 # 이미지 생성 버튼 동작
@@ -392,64 +475,102 @@ if clicked_generate:
                 bulk_generate_images(st.session_state["scenes"], max_workers=4)
 
             st.success("✅ 대본이 자동으로 분류되고 이미지가 생성되었습니다.")
+            # 새로 이미지를 만들면 이전 영상은 초기화
+            st.session_state["video_bytes"] = None
 
-# =========================
-# 결과 테이블 출력 (스크롤 박스 안에)
-# =========================
+# 최신 scenes 반영
 scenes = st.session_state.get("scenes", [])
 
+# =========================
+# 영상 생성 버튼 동작
+# =========================
+if clicked_video:
+    if not scenes or not any(s.get("image_b64") for s in scenes):
+        st.warning("먼저 이미지를 생성한 후에 영상을 만들 수 있습니다.")
+    else:
+        video_model_label = st.session_state.get("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
+        video_model = VIDEO_MODELS.get(video_model_label, "local_sequence_mp4")
+
+        if video_model == "local_sequence_mp4":
+            seconds_per_scene = float(st.session_state.get("seconds_per_scene", 3.0))
+            with st.spinner("영상을 생성하는 중입니다..."):
+                video_bytes = create_video_from_scenes(scenes, seconds_per_scene=seconds_per_scene, fps=30)
+            if video_bytes:
+                st.session_state["video_bytes"] = video_bytes
+                st.success("🎬 영상이 생성되었습니다.")
+            else:
+                st.error("영상 생성에 사용할 이미지가 없습니다.")
+        else:
+            st.error("아직 구현되지 않은 영상 생성 모델입니다.")
+
+# =========================
+# 결과 테이블 출력 (container + 스크롤 박스)
+# =========================
 if scenes:
     st.subheader("문장별 프롬프트 및 이미지")
 
-    # 스크롤 가능한 컨테이너 시작
-    st.markdown('<div class="results-container">', unsafe_allow_html=True)
+    with st.container():
+        st.markdown('<div class="results-container">', unsafe_allow_html=True)
 
-    # 헤더
-    header_cols = st.columns([0.5, 2, 2, 1, 0.9])
-    header_cols[0].markdown("**번호**")
-    header_cols[1].markdown("**원본문장**")
-    header_cols[2].markdown("**생성된 영어 프롬프트**")
-    header_cols[3].markdown("**이미지**")
-    header_cols[4].markdown("**조작**")
+        # 헤더
+        header_cols = st.columns([0.5, 2, 2, 1, 0.9])
+        header_cols[0].markdown("**번호**")
+        header_cols[1].markdown("**원본문장**")
+        header_cols[2].markdown("**생성된 영어 프롬프트**")
+        header_cols[3].markdown("**이미지**")
+        header_cols[4].markdown("**조작**")
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # 각 행
-    for i, scene in enumerate(scenes):
-        cols = st.columns([0.5, 2, 2, 1, 0.9])
+        # 각 행
+        for i, scene in enumerate(scenes):
+            cols = st.columns([0.5, 2, 2, 1, 0.9])
 
-        # 번호
-        cols[0].write(scene["id"])
+            # 번호
+            cols[0].write(scene["id"])
 
-        # 한국어 문장 (작은 폰트)
-        korean_html = scene["korean"].replace("\n", "<br>")
-        cols[1].markdown(
-            f'<div class="small-text-cell">{korean_html}</div>',
-            unsafe_allow_html=True,
-        )
+            # 한국어 문장 (작은 폰트)
+            korean_html = scene["korean"].replace("\n", "<br>")
+            cols[1].markdown(
+                f'<div class="small-text-cell">{korean_html}</div>',
+                unsafe_allow_html=True,
+            )
 
-        # 영어 프롬프트 (작은 폰트)
-        prompt_html = scene["prompt_en"].replace("\n", "<br>")
-        cols[2].markdown(
-            f'<div class="small-text-cell">{prompt_html}</div>',
-            unsafe_allow_html=True,
-        )
+            # 영어 프롬프트 (작은 폰트)
+            prompt_html = scene["prompt_en"].replace("\n", "<br>")
+            cols[2].markdown(
+                f'<div class="small-text-cell">{prompt_html}</div>',
+                unsafe_allow_html=True,
+            )
 
-        # 이미지
-        if scene["image_b64"]:
-            img_bytes = b64_to_bytes(scene["image_b64"])
-            cols[3].image(img_bytes, use_column_width=True)
-        else:
-            cols[3].write("아직 이미지 없음")
+            # 이미지
+            if scene["image_b64"]:
+                img_bytes = b64_to_bytes(scene["image_b64"])
+                cols[3].image(img_bytes, use_column_width=True)
+            else:
+                cols[3].write("아직 이미지 없음")
 
-        # 재생성 버튼
-        if cols[4].button("재 생성", key=f"regen_{scene['id']}"):
-            with st.spinner(f"{scene['id']}번 이미지를 다시 생성 중..."):
-                new_b64 = generate_image(scene["prompt_en"])
-                st.session_state["scenes"][i]["image_b64"] = new_b64
-            st.rerun()
+            # 재생성 버튼
+            if cols[4].button("재 생성", key=f"regen_{scene['id']}"):
+                with st.spinner(f"{scene['id']}번 이미지를 다시 생성 중..."):
+                    new_b64 = generate_image(scene["prompt_en"])
+                    st.session_state["scenes"][i]["image_b64"] = new_b64
+                st.rerun()
 
-    # 스크롤 컨테이너 끝
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 else:
     st.info("대본을 입력하고 **이미지 생성** 버튼을 눌러주세요.")
+
+# =========================
+# 생성된 영상 미리보기 / 다운로드
+# =========================
+if st.session_state.get("video_bytes"):
+    st.subheader("🎬 생성된 영상 미리보기")
+    st.video(st.session_state["video_bytes"])
+
+    st.download_button(
+        label="📥 영상 다운로드 (MP4)",
+        data=st.session_state["video_bytes"],
+        file_name="aniking_output.mp4",
+        mime="video/mp4",
+    )
