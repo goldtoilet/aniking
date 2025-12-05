@@ -1,263 +1,327 @@
+
 import os
 import base64
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
-from openai import OpenAI, BadRequestError, RateLimitError
-
+from openai import OpenAI
+from dotenv import load_dotenv
 
 # =========================
-# 1. 기본 설정 & 클라이언트
+# .env 로 환경변수 로드 (로컬 개발용)
 # =========================
+load_dotenv()
 
+# =========================
+# 페이지 기본 설정 & 스타일
+# =========================
 st.set_page_config(
-    page_title="Aniking - 스크립트 투 이미지",
+    page_title="AI 애니메이션 메이커",
     page_icon="🎬",
     layout="wide",
 )
 
-API_KEY = os.getenv("GPT_API_KEY")
-LOGIN_ID_ENV = os.getenv("LOGIN_ID")
-LOGIN_PW_ENV = os.getenv("LOGIN_PW")
+st.markdown(
+    """
+    <style>
+    textarea {
+        font-size: 0.9rem !important;
+        line-height: 1.4 !important;
+    }
+    .main-title {
+        font-size: 2.3rem;
+        font-weight: 800;
+        margin-bottom: 0.2rem;
+    }
+    .main-subtitle {
+        font-size: 0.95rem;
+        color: #555;
+        margin-bottom: 1.5rem;
+    }
+    .logo-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.25rem 0.6rem;
+        border-radius: 999px;
+        background: #F3F4FF;
+        color: #444;
+        font-size: 0.8rem;
+        margin-bottom: 0.5rem;
+    }
+    .logo-badge span.emoji {
+        font-size: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-client = OpenAI(api_key=API_KEY)
+# =========================
+# 환경변수 가져오기
+# =========================
+def get_env(key: str, default: str = "") -> str:
+    value = os.getenv(key)
+    return value if value is not None else default
 
-# 세션 기본값
+
+GPT_API_KEY = get_env("GPT_API_KEY", "")
+LOGIN_ID_ENV = get_env("LOGIN_ID", "")
+LOGIN_PW_ENV = get_env("LOGIN_PW", "")
+
+if not GPT_API_KEY:
+    st.error("❌ GPT_API_KEY 가 설정되어 있지 않습니다. .env 또는 환경변수를 확인해주세요.")
+    st.stop()
+
+client = OpenAI(api_key=GPT_API_KEY)
+
+# =========================
+# 세션 상태 기본값
+# =========================
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("login_id", "")
-st.session_state.setdefault("login_pw", "")
-st.session_state.setdefault("scenes", [])  # [{"id":.., "text":.., "prompt":.., "image_b64":..}, ...]
-
-
-# =========================
-# 2. 유틸 함수
-# =========================
-
-def show_image_from_b64(b64_str: str):
-    """base64 문자열을 실제 이미지로 렌더링"""
-    if not b64_str:
-        return
-    try:
-        img_bytes = base64.b64decode(b64_str)
-        st.image(img_bytes)
-    except Exception as e:
-        st.error(f"이미지 디코딩 중 오류: {e}")
-
+st.session_state.setdefault("scenes", [])
+st.session_state.setdefault("raw_script", "")
 
 # =========================
-# 3. OpenAI 이미지 생성
+# 로그인 화면
 # =========================
+def login_screen():
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-def generate_image(prompt: str, size: str = "1024x1024"):
-    """
-    gpt-image-1 모델로 이미지 1장을 생성하고 base64 문자열 반환.
-    prompt 가 비어 있으면 None 반환.
-    """
-    if not prompt or prompt.strip() == "":
-        return None
+    st.markdown(
+        """
+        <div style="text-align:center;">
+            <div class="logo-badge">
+                <span class="emoji">🎬</span>
+                <span>AI Animation Maker</span>
+            </div>
+            <div class="main-title">로그인이 필요합니다</div>
+            <div class="main-subtitle">
+                등록된 계정으로 로그인 후 AI 애니메이션 메이커를 사용할 수 있습니다.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    # gpt-image-1 에서 허용되는 사이즈
-    valid_sizes = ("1024x1024", "1024x1536", "1536x1024", "auto")
-    if size not in valid_sizes:
-        size = "1024x1024"
+    st.write("")
+    st.write("")
 
-    try:
-        resp = client.images.generate(
-            model="gpt-image-1",
-            prompt=prompt,
-            n=1,
-            size=size,
-            # gpt-image-1 은 항상 b64_json 을 반환하므로
-            # response_format 을 따로 줄 필요 없음 (주면 에러날 수 있음)
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        user_id = st.text_input(
+            "아이디",
+            value=st.session_state.get("login_id", ""),
+            key="login_input_id",
         )
-        b64_str = resp.data[0].b64_json
-        return b64_str
+        pw = st.text_input("비밀번호", type="password", key="login_input_pw")
 
-    except BadRequestError as e:
-        st.error(f"❌ BadRequestError (요청 형식 오류): {e}")
-        return None
-    except RateLimitError as e:
-        st.error(f"⏱️ RateLimitError (호출 한도 초과): {e}")
-        return None
-    except Exception as e:
-        st.error(f"⚠️ 알 수 없는 이미지 생성 오류: {e}")
-        return None
+        if st.button("로그인", type="primary", use_container_width=True):
+            if not LOGIN_ID_ENV or not LOGIN_PW_ENV:
+                st.error("서버에 로그인 정보(LOGIN_ID, LOGIN_PW)가 설정되어 있지 않습니다.")
+            elif user_id == LOGIN_ID_ENV and pw == LOGIN_PW_ENV:
+                st.session_state["logged_in"] = True
+                st.session_state["login_id"] = user_id
+                st.success("✅ 로그인 성공! 메인 화면으로 이동합니다.")
+                st.rerun()
+            else:
+                st.error("❌ 아이디 또는 비밀번호가 올바르지 않습니다.")
 
 
-def bulk_generate_images(scenes, max_workers: int = 4, size: str = "1024x1024"):
+# 로그인 체크
+if not st.session_state.get("logged_in", False):
+    login_screen()
+    st.stop()
+
+# =========================
+# 유틸 함수들
+# =========================
+def parse_script(text: str):
     """
-    scenes 리스트에 대해 병렬로 이미지를 생성.
-    각 scene 은 {"id", "text", "prompt", "image_b64"} 구조를 기대.
-    image_b64 필드에 base64 결과를 채워서 반환.
+    대본 텍스트를 번호 / 한국어 문장 / 영어 프롬프트로 파싱.
+    형식 예:
+    1
+    한국어문장… Shot on ...
+    2
+    한국어문장… Shot on ...
     """
-    if not scenes:
-        return scenes
+    scenes = []
 
-    results = [None] * len(scenes)
+    # 번호로 시작하는 블록 단위로 분리
+    pattern = r'(\d+)\s*\n(.+?)(?=\n\d+\s*\n|\Z)'
+    matches = re.findall(pattern, text, flags=re.DOTALL)
 
-    def _task(idx, prompt):
-        b64 = generate_image(prompt, size=size)
-        return idx, b64
+    for num, block in matches:
+        block = block.strip()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_idx = {}
-        for idx, scene in enumerate(scenes):
-            prompt = scene.get("prompt") or scene.get("text") or ""
-            if not prompt or prompt.strip() == "":
-                results[idx] = None
-                continue
-            fut = executor.submit(_task, idx, prompt)
-            future_to_idx[fut] = idx
+        # 특수 줄바꿈( )도 일반 줄바꿈으로 치환
+        block = block.replace("\u2028", "\n")
 
-        for fut in as_completed(future_to_idx):
-            idx = future_to_idx[fut]
-            try:
-                idx_ret, b64 = fut.result()
-                results[idx_ret] = b64
-            except Exception as e:
-                st.error(f"scene {idx} 이미지 생성 중 오류: {e}")
-                results[idx] = None
+        if "Shot on" in block:
+            ko_part, en_part = block.split("Shot on", 1)
+            korean = ko_part.strip()
+            english_prompt = "Shot on" + en_part.strip()
+        else:
+            korean = block.strip()
+            english_prompt = ""
 
-    # 결과를 원래 scenes 에 병합
-    for idx, b64 in enumerate(results):
-        scenes[idx]["image_b64"] = b64
-
+        scenes.append(
+            {
+                "id": int(num),
+                "korean": korean,
+                "prompt_en": english_prompt,
+                "image_b64": None,
+            }
+        )
     return scenes
 
 
-# =========================
-# 4. 로그인 화면
-# =========================
+def generate_image(prompt: str, size: str = "512x512"):
+    """OpenAI 이미지 하나 생성하고 base64 문자열 반환"""
+    if not prompt:
+        return None
 
-def login_screen():
-    st.title("🔒 로그인 (Aniking)")
+    resp = client.images.generate(
+        model="gpt-image-1-mini",
+        prompt=prompt,
+        size=size,
+        n=1,
+    )
+    b64_str = resp.data[0].b64_json  # base64 인코딩된 PNG
+    return b64_str
 
-    col1, col2 = st.columns(2)
-    with col1:
-        login_id = st.text_input("아이디", value=st.session_state.get("login_id", ""))
-    with col2:
-        login_pw = st.text_input(
-            "비밀번호",
-            type="password",
-            value=st.session_state.get("login_pw", ""),
-        )
 
-    if st.button("로그인"):
-        if LOGIN_ID_ENV and LOGIN_PW_ENV:
-            if login_id == LOGIN_ID_ENV and login_pw == LOGIN_PW_ENV:
-                st.session_state["logged_in"] = True
-                st.success("✅ 로그인 성공")
-                st.experimental_rerun()
-            else:
-                st.error("❌ 아이디 또는 비밀번호가 올바르지 않습니다.")
-        else:
-            # 환경변수 미사용 시, 아무 값이나 넣으면 통과 (개발용)
-            st.session_state["logged_in"] = True
-            st.warning("환경변수가 없어 임시로 로그인을 통과시켰습니다.")
-            st.experimental_rerun()
+def bulk_generate_images(scenes, max_workers: int = 4):
+    """여러 장을 병렬로 생성"""
+    def _task(idx):
+        prompt = scenes[idx]["prompt_en"]
+        b64 = generate_image(prompt)
+        return idx, b64
 
-    st.session_state["login_id"] = login_id
-    st.session_state["login_pw"] = login_pw
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_task, i) for i in range(len(scenes))]
+        for fut in as_completed(futures):
+            idx, b64 = fut.result()
+            scenes[idx]["image_b64"] = b64
+
+
+def b64_to_bytes(b64_str: str):
+    return base64.b64decode(b64_str)
 
 
 # =========================
-# 5. 메인 앱 화면
+# 사이드바
 # =========================
-
-def app_main():
-    st.title("🎬 Aniking - 스크립트 → 씬 → 이미지")
-
-    # --- 좌측: 대본 입력 & 씬 생성 ---
-    left, right = st.columns([1.1, 1.4])
-
-    with left:
-        st.subheader("1️⃣ 대본 입력")
-
-        script_text = st.text_area(
-            "한 줄당 한 씬으로 사용할 대본을 입력하세요.",
-            height=200,
-            placeholder="예)\n장면1 설명\n장면2 설명\n장면3 설명...",
-        )
-
-        if st.button("대본 → 씬 리스트 생성", type="primary"):
-            lines = [ln.strip() for ln in script_text.splitlines() if ln.strip()]
-            scenes = []
-            for i, line in enumerate(lines, start=1):
-                scenes.append(
-                    {
-                        "id": i,
-                        "text": line,     # 원문
-                        "prompt": line,   # 기본 프롬프트 (원하면 나중에 수정)
-                        "image_b64": None,
-                    }
-                )
-            st.session_state["scenes"] = scenes
-            st.success(f"✅ 씬 {len(scenes)}개 생성 완료")
-
-        st.markdown("---")
-
-        st.subheader("2️⃣ 씬 프롬프트 편집")
-
-        if not st.session_state["scenes"]:
-            st.info("먼저 대본을 입력하고 씬 리스트를 생성하세요.")
-        else:
-            for scene in st.session_state["scenes"]:
-                with st.expander(f"Scene {scene['id']}", expanded=False):
-                    scene["text"] = st.text_input(
-                        f"[{scene['id']}] 대본",
-                        value=scene.get("text", ""),
-                        key=f"text_{scene['id']}",
-                    )
-                    scene["prompt"] = st.text_area(
-                        f"[{scene['id']}] 이미지 프롬프트 (영어/한국어 모두 가능)",
-                        value=scene.get("prompt", ""),
-                        key=f"prompt_{scene['id']}",
-                        height=80,
-                    )
-
-    # --- 우측: 이미지 생성 & 미리보기 ---
-    with right:
-        st.subheader("3️⃣ 이미지 일괄 생성")
-
-        if st.button("🖼 GPT-Image-1로 이미지 생성", type="primary"):
-            if not st.session_state["scenes"]:
-                st.warning("먼저 씬 리스트를 생성하세요.")
-            else:
-                with st.spinner("이미지 생성 중... (씬 수에 따라 시간이 걸릴 수 있습니다)"):
-                    scenes_with_images = bulk_generate_images(
-                        st.session_state["scenes"],
-                        max_workers=4,
-                        size="1024x1024",
-                    )
-                    st.session_state["scenes"] = scenes_with_images
-                st.success("✅ 모든 씬에 대한 이미지 생성 완료")
-
-        st.markdown("---")
-        st.subheader("4️⃣ 결과 확인")
-
-        if not st.session_state["scenes"]:
-            st.info("아직 생성된 씬이 없습니다.")
-        else:
-            for scene in st.session_state["scenes"]:
-                st.markdown(f"### Scene {scene['id']}")
-                st.write(scene.get("text", ""))
-                if scene.get("image_b64"):
-                    show_image_from_b64(scene["image_b64"])
-                else:
-                    st.info("이미지가 아직 생성되지 않았습니다.")
-
+with st.sidebar:
+    st.markdown("### 🎬 AI 애니메이션 메이커")
+    st.write(f"👤 로그인: **{st.session_state.get('login_id', '')}**")
+    st.markdown("---")
+    st.markdown("#### ⚙️ 향후 옵션")
+    st.caption("- 스타일 프리셋 선택\n- 해상도 / 품질 옵션\n- 캐릭터 고정 설정 등")
+    st.markdown("---")
+    if st.button("로그아웃"):
+        st.session_state["logged_in"] = False
+        st.session_state["scenes"] = []
+        st.session_state["raw_script"] = ""
+        st.rerun()
 
 # =========================
-# 6. 진입점
+# 메인 UI
 # =========================
+st.markdown(
+    """
+    <div>
+        <div class="logo-badge">
+            <span class="emoji">🎬</span>
+            <span>AI Animation Maker</span>
+        </div>
+        <div class="main-title">AI 애니메이션 메이커</div>
+        <div class="main-subtitle">
+            대본을 입력하고, 문장별 프롬프트를 기반으로 이미지를 벌크로 생성하세요.
+            이후 음성·영상까지 확장할 수 있습니다.
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-def main():
-    # 로그인 안 되어 있으면 로그인 화면 먼저
-    if not st.session_state.get("logged_in", False):
-        login_screen()
+raw_text = st.text_area(
+    "여기에 대본을 붙여넣으세요.",
+    height=260,
+    value=st.session_state.get("raw_script", ""),
+    placeholder="1\n한국어 문장… Shot on ...\n\n2\n한국어 문장… Shot on ...",
+)
+
+col_btn1, col_btn2 = st.columns(2)
+with col_btn1:
+    clicked_generate = st.button("이미지 생성", type="primary", use_container_width=True)
+with col_btn2:
+    st.button("영상 생성 (준비 중)", disabled=True, use_container_width=True)
+
+# =========================
+# 이미지 생성 버튼 동작
+# =========================
+if clicked_generate:
+    if not raw_text.strip():
+        st.warning("대본을 먼저 입력해주세요.")
     else:
-        app_main()
+        scenes = parse_script(raw_text)
+        if not scenes:
+            st.error("대본 형식을 인식하지 못했습니다. 번호와 문장 형식을 다시 확인해주세요.")
+        else:
+            st.session_state["raw_script"] = raw_text
+            st.session_state["scenes"] = scenes
 
+            with st.spinner("이미지를 벌크로 생성 중입니다..."):
+                bulk_generate_images(st.session_state["scenes"], max_workers=4)
 
-if __name__ == "__main__":
-    main()
+            st.success("✅ 대본이 자동으로 분류되고 이미지가 생성되었습니다.")
+
+# =========================
+# 결과 테이블 출력
+# =========================
+scenes = st.session_state.get("scenes", [])
+
+if scenes:
+    st.subheader("문장별 프롬프트 및 이미지")
+
+    # 헤더
+    header_cols = st.columns([0.5, 2, 2, 1, 0.9])
+    header_cols[0].markdown("**번호**")
+    header_cols[1].markdown("**원본문장**")
+    header_cols[2].markdown("**생성된 영어 프롬프트**")
+    header_cols[3].markdown("**이미지**")
+    header_cols[4].markdown("**조작**")
+
+    st.markdown("---")
+
+    # 각 행
+    for i, scene in enumerate(scenes):
+        cols = st.columns([0.5, 2, 2, 1, 0.9])
+
+        # 번호
+        cols[0].write(scene["id"])
+
+        # 한국어 문장
+        cols[1].write(scene["korean"])
+
+        # 영어 프롬프트
+        cols[2].write(scene["prompt_en"])
+
+        # 이미지
+        if scene["image_b64"]:
+            img_bytes = b64_to_bytes(scene["image_b64"])
+            cols[3].image(img_bytes, use_column_width=True)
+        else:
+            cols[3].write("아직 이미지 없음")
+
+        # 재생성 버튼
+        if cols[4].button("재 생성", key=f"regen_{scene['id']}"):
+            with st.spinner(f"{scene['id']}번 이미지를 다시 생성 중..."):
+                new_b64 = generate_image(scene["prompt_en"])
+                st.session_state["scenes"][i]["image_b64"] = new_b64
+            st.rerun()
+else:
+    st.info("대본을 입력하고 **이미지 생성** 버튼을 눌러주세요.")
