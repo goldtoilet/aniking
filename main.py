@@ -186,10 +186,9 @@ def generate_image(prompt: str, size: str = "512x512"):
         prompt=prompt,
         size=size,
         n=1,
+        response_format="b64_json",   # ⭐ 필수!!!
     )
-    b64_str = resp.data[0].b64_json  # base64 인코딩된 PNG
-    return b64_str
-
+    return resp.data[0].b64_json
 
 def bulk_generate_images(scenes, max_workers: int = 4):
     """여러 장을 병렬로 생성"""
