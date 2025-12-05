@@ -123,7 +123,7 @@ def login_screen():
                 st.session_state["logged_in"] = True
                 st.session_state["login_id"] = user_id
                 st.success("✅ 로그인 성공! 잠시 후 메인 화면으로 이동합니다.")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("❌ 아이디 또는 비밀번호가 올바르지 않습니다.")
 
@@ -223,7 +223,7 @@ with st.sidebar:
         st.session_state["logged_in"] = False
         st.session_state["scenes"] = []
         st.session_state["raw_script"] = ""
-        st.experimental_rerun()
+        st.rerun()
 
 # =========================
 # 메인 UI
@@ -319,6 +319,6 @@ if scenes:
             with st.spinner(f"{scene['id']}번 이미지를 다시 생성 중..."):
                 new_b64 = generate_image(scene["prompt_en"])
                 st.session_state["scenes"][i]["image_b64"] = new_b64
-            st.experimental_rerun()
+            st.rerun()
 else:
     st.info("대본을 입력하고 **이미지 생성** 버튼을 눌러주세요.")
