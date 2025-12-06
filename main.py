@@ -9,7 +9,12 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from PIL import Image
-import imageio.v2 as imageio
+
+# imageio가 설치되지 않은 환경에서도 앱이 죽지 않게 예외 처리
+try:
+    import imageio.v2 as imageio
+except ImportError:
+    imageio = None
 
 # =========================
 # .env 로 환경변수 로드 (로컬 개발용)
@@ -324,7 +329,12 @@ def create_video_from_scenes(scenes, seconds_per_scene: float, fps: int = 30) ->
     """
     이미지가 들어있는 scenes 리스트를 사용해 MP4 영상을 생성하고, 영상의 바이너리(bytes)를 반환.
     scene["image_b64"] 가 있는 항목만 사용.
+    imageio가 없는 환경이면 None 반환.
     """
+    if imageio is None:
+        # 모듈이 없으면 영상 생성 불가
+        return None
+
     images = []
     for scene in scenes:
         if not scene.get("image_b64"):
@@ -488,20 +498,30 @@ if clicked_video:
     if not scenes or not any(s.get("image_b64") for s in scenes):
         st.warning("먼저 이미지를 생성한 후에 영상을 만들 수 있습니다.")
     else:
-        video_model_label = st.session_state.get("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
-        video_model = VIDEO_MODELS.get(video_model_label, "local_sequence_mp4")
-
-        if video_model == "local_sequence_mp4":
-            seconds_per_scene = float(st.session_state.get("seconds_per_scene", 3.0))
-            with st.spinner("영상을 생성하는 중입니다..."):
-                video_bytes = create_video_from_scenes(scenes, seconds_per_scene=seconds_per_scene, fps=30)
-            if video_bytes:
-                st.session_state["video_bytes"] = video_bytes
-                st.success("🎬 영상이 생성되었습니다.")
-            else:
-                st.error("영상 생성에 사용할 이미지가 없습니다.")
+        if imageio is None:
+            st.error(
+                "영상 생성을 위해서는 `imageio` 패키지가 필요합니다.\n\n"
+                "로컬 또는 Streamlit Cloud에서 `requirements.txt`에 `imageio`를 추가한 뒤 다시 배포해주세요."
+            )
         else:
-            st.error("아직 구현되지 않은 영상 생성 모델입니다.")
+            video_model_label = st.session_state.get("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
+            video_model = VIDEO_MODELS.get(video_model_label, "local_sequence_mp4")
+
+            if video_model == "local_sequence_mp4":
+                seconds_per_scene = float(st.session_state.get("seconds_per_scene", 3.0))
+                with st.spinner("영상을 생성하는 중입니다..."):
+                    video_bytes = create_video_from_scenes(
+                        scenes,
+                        seconds_per_scene=seconds_per_scene,
+                        fps=30,
+                    )
+                if video_bytes:
+                    st.session_state["video_bytes"] = video_bytes
+                    st.success("🎬 영상이 생성되었습니다.")
+                else:
+                    st.error("영상 생성에 사용할 이미지가 없습니다.")
+            else:
+                st.error("아직 구현되지 않은 영상 생성 모델입니다.")
 
 # =========================
 # 결과 테이블 출력 (container + 스크롤 박스)
