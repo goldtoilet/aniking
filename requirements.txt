@@ -3,3 +3,4 @@ openai
 python-dotenv
 Pillow
 imageio
+imageio-ffmpeg
