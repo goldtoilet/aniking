@@ -9,6 +9,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from PIL import Image
+import numpy as np  # ← 추가
 
 # imageio가 설치되지 않은 환경에서도 앱이 죽지 않게 예외 처리
 try:
@@ -103,12 +104,10 @@ client = OpenAI(api_key=GPT_API_KEY)
 # =========================
 IMAGE_MODELS = {
     "OpenAI gpt-image-1": "gpt-image-1",
-    # 향후 다른 이미지 모델 추가 가능
 }
 
 VIDEO_MODELS = {
     "이미지 시퀀스 → MP4 (로컬 합성)": "local_sequence_mp4",
-    # 향후 AI 비디오 모델 추가 가능
 }
 
 # =========================
@@ -204,7 +203,6 @@ def login_screen():
                 st.error("❌ 아이디 또는 비밀번호가 올바르지 않습니다.")
 
 
-# 로그인 체크
 if not st.session_state.get("logged_in", False):
     login_screen()
     st.stop()
@@ -214,24 +212,20 @@ if not st.session_state.get("logged_in", False):
 # =========================
 def parse_script(text: str):
     """
-    대본 텍스트를 번호 / 한국어 문장 / 영어 프롬프트로 파싱.
-    형식 예:
     1
-    한국어문장… Shot on ...
+    한국어문장…
+    Shot on ...
     2
-    한국어문장… Shot on ...
+    ...
+    이런 형식의 텍스트를 scenes 리스트로 파싱
     """
     scenes = []
-
-    # 번호로 시작하는 블록 단위로 분리
     pattern = r'(\d+)\s*\n(.+?)(?=\n\d+\s*\n|\Z)'
     matches = re.findall(pattern, text, flags=re.DOTALL)
 
     for num, block in matches:
         block = block.strip()
-
-        # 특수 줄바꿈( )도 일반 줄바꿈으로 치환
-        block = block.replace("\u2028", "\n")
+        block = block.replace("\u2028", "\n")  # 특수 줄바꿈 치환
 
         if "Shot on" in block:
             ko_part, en_part = block.split("Shot on", 1)
@@ -253,22 +247,20 @@ def parse_script(text: str):
 
 
 def get_image_params():
-    """사이드바에서 선택한 옵션을 실제 size/quality 값으로 변환"""
     orientation = st.session_state.get("image_orientation", "정사각형 1:1 (1024x1024)")
     quality = st.session_state.get("image_quality", "low")
 
     if orientation.startswith("정사각형"):
         size = "1024x1024"
     elif orientation.startswith("가로형"):
-        size = "1536x1024"  # 3:2 가로
+        size = "1536x1024"
     else:
-        size = "1024x1536"  # 2:3 세로
+        size = "1024x1536"
 
     return size, quality
 
 
 def build_full_prompt(base_prompt: str) -> str:
-    """스타일 프리셋 + 캐릭터 고정 옵션을 포함한 최종 프롬프트 생성"""
     style_name = st.session_state.get("style_preset", "다큐 + 스틱맨 설명 캐릭터")
     style_wrapper = STYLE_PRESETS.get(style_name, "")
 
@@ -286,7 +278,6 @@ def build_full_prompt(base_prompt: str) -> str:
 
 
 def generate_image(prompt: str):
-    """OpenAI 이미지 하나 생성하고 base64 문자열 반환"""
     if not prompt:
         return None
 
@@ -303,12 +294,10 @@ def generate_image(prompt: str):
         quality=quality,
         n=1,
     )
-    b64_str = resp.data[0].b64_json
-    return b64_str
+    return resp.data[0].b64_json
 
 
 def bulk_generate_images(scenes, max_workers: int = 4):
-    """여러 장을 병렬로 생성"""
     def _task(idx):
         prompt = scenes[idx]["prompt_en"]
         b64 = generate_image(prompt)
@@ -331,9 +320,8 @@ def create_video_from_scenes(
     fps: int = 30,
 ) -> tuple[bytes | None, str | None]:
     """
-    이미지가 들어있는 scenes 리스트를 사용해 MP4 영상을 생성.
-    성공 시 (video_bytes, None) 반환.
-    실패 시 (None, 에러메시지) 반환.
+    성공 시 (video_bytes, None)
+    실패 시 (None, 에러메시지)
     """
     if imageio is None:
         return None, "IMAGEIO_MISSING"
@@ -359,7 +347,7 @@ def create_video_from_scenes(
 
     try:
         for img in images:
-            frame = imageio.asarray(img)
+            frame = np.asarray(img)   # ← 여기 수정 (imageio.asarray → numpy.asarray)
             for _ in range(frames_per_scene):
                 writer.append_data(frame)
         writer.close()
@@ -500,7 +488,6 @@ if clicked_generate:
             st.session_state["video_bytes"] = None
             st.session_state["video_error_msg"] = None
 
-# 최신 scenes 반영
 scenes = st.session_state.get("scenes", [])
 
 # =========================
@@ -533,7 +520,6 @@ if clicked_video:
                     st.success("🎬 영상이 생성되었습니다.")
                 else:
                     st.session_state["video_bytes"] = None
-                    # err_msg 안에 imageio-ffmpeg 관련 메시지가 들어있을 수 있음
                     st.session_state["video_error_msg"] = (
                         "영상 생성 중 오류가 발생했습니다.\n\n"
                         "대부분은 `imageio-ffmpeg` 가 설치되지 않았거나 ffmpeg 플러그인을 찾지 못해서 생기는 문제입니다.\n"
@@ -545,7 +531,7 @@ if clicked_video:
                 st.session_state["video_bytes"] = None
 
 # =========================
-# 결과 테이블 출력 (container + 스크롤 박스)
+# 결과 테이블 (스크롤 컨테이너)
 # =========================
 if scenes:
     st.subheader("문장별 프롬프트 및 이미지")
@@ -596,7 +582,7 @@ else:
     st.info("대본을 입력하고 **이미지 생성** 버튼을 눌러주세요.")
 
 # =========================
-# 생성된 영상 미리보기 / 다운로드 + 에러 표시
+# 생성된 영상 / 오류 표시
 # =========================
 if st.session_state.get("video_bytes"):
     st.subheader("🎬 생성된 영상 미리보기")
