@@ -109,40 +109,11 @@ VIDEO_MODELS = {
 }
 
 # =========================
-# 스타일 프리셋 정의
-# =========================
-STYLE_PRESETS = {
-    "다큐 + 사실적 배경": (
-        "Style Wrapper:\n"
-        "Background: documentary-style, semi-realistic environment, neutral color grading, "
-        "soft cinematic lighting, subtle film grain.\n"
-        "Characters: realistic human figures or crowds that match the story context.\n"
-        "Camera: wide cinematic framing with natural depth and gentle atmospheric haze.\n"
-    ),
-    "다큐 + 스틱맨 설명 캐릭터": (
-        "Style Wrapper:\n"
-        "Background: semi-realistic cinematic environment, dramatic lighting, soft shadows, mild film grain, "
-        "dystopian or documentary atmosphere.\n"
-        "Characters: simple 2D stickman drawn with thick black outlines, white circular face, small black-dot eyes, "
-        "line-based limbs, cartoon-like contrast against the realistic background.\n"
-        "Camera: wide cinematic framing, slight depth of field, subtle atmospheric haze.\n"
-    ),
-    "풀 2D 애니메이션": (
-        "Style Wrapper:\n"
-        "Background: flat 2D animation style, pastel colors, simple geometric buildings and props.\n"
-        "Characters: cute 2D stickman-style characters with thick black outlines and expressive poses.\n"
-        "Camera: simple animation-style wide shot, clean composition, no film grain.\n"
-    ),
-}
-
-# =========================
 # 세션 상태 기본값
 # =========================
 st.session_state.setdefault("scenes", [])
-st.session_state.setdefault("raw_script", "")
-
-st.session_state.setdefault("style_preset", "다큐 + 스틱맨 설명 캐릭터")
-st.session_state.setdefault("lock_character", True)
+st.session_state.setdefault("base_prompt", "")
+st.session_state.setdefault("prompt_variants_text", "")
 
 st.session_state.setdefault("image_model_label", "OpenAI gpt-image-1")
 st.session_state.setdefault("image_orientation", "정사각형 1:1 (1024x1024)")
@@ -156,42 +127,6 @@ st.session_state.setdefault("video_error_msg", None)
 # =========================
 # 유틸 함수들
 # =========================
-def parse_script(text: str):
-    """
-    1
-    한국어문장…
-    Shot on ...
-    2
-    ...
-    이런 형식의 텍스트를 scenes 리스트로 파싱
-    """
-    scenes = []
-    pattern = r'(\d+)\s*\n(.+?)(?=\n\d+\s*\n|\Z)'
-    matches = re.findall(pattern, text, flags=re.DOTALL)
-
-    for num, block in matches:
-        block = block.strip()
-        block = block.replace("\u2028", "\n")  # 특수 줄바꿈 치환
-
-        if "Shot on" in block:
-            ko_part, en_part = block.split("Shot on", 1)
-            korean = ko_part.strip()
-            english_prompt = "Shot on" + en_part.strip()
-        else:
-            korean = block.strip()
-            english_prompt = ""
-
-        scenes.append(
-            {
-                "id": int(num),
-                "korean": korean,
-                "prompt_en": english_prompt,
-                "image_b64": None,
-            }
-        )
-    return scenes
-
-
 def get_image_params():
     orientation = st.session_state.get("image_orientation", "정사각형 1:1 (1024x1024)")
     quality = st.session_state.get("image_quality", "low")
@@ -206,36 +141,19 @@ def get_image_params():
     return size, quality
 
 
-def build_full_prompt(base_prompt: str) -> str:
-    style_name = st.session_state.get("style_preset", "다큐 + 스틱맨 설명 캐릭터")
-    style_wrapper = STYLE_PRESETS.get(style_name, "")
-
-    lock_char = st.session_state.get("lock_character", False)
-    if lock_char:
-        style_wrapper += (
-            "\nThe main character is a recurring simple 2D stickman narrator with a white circular face "
-            "and small black-dot eyes, always present somewhere in the scene, explaining or reacting to the situation.\n"
-        )
-
-    if style_wrapper:
-        return style_wrapper + "\nScene:\n" + base_prompt
-    else:
-        return base_prompt
-
-
 def generate_image(prompt: str):
+    """주어진 프롬프트 그대로 이미지 생성"""
     if not prompt:
         return None
 
     size, quality = get_image_params()
-    full_prompt = build_full_prompt(prompt)
 
     image_model_label = st.session_state.get("image_model_label", "OpenAI gpt-image-1")
     model = IMAGE_MODELS.get(image_model_label, "gpt-image-1")
 
     resp = client.images.generate(
         model=model,
-        prompt=full_prompt,
+        prompt=prompt,
         size=size,
         quality=quality,
         n=1,
@@ -293,7 +211,7 @@ def create_video_from_scenes(
 
     try:
         for img in images:
-            frame = np.asarray(img)   # ← 여기 수정 (imageio.asarray → numpy.asarray)
+            frame = np.asarray(img)
             for _ in range(frames_per_scene):
                 writer.append_data(frame)
         writer.close()
@@ -305,6 +223,54 @@ def create_video_from_scenes(
             return f.read(), None
     except Exception as e:
         return None, f"FILE_READ_ERROR: {e}"
+
+
+def build_scenes_from_prompt(base_prompt: str, variants_text: str):
+    """
+    기본 프롬프트 + 변형 리스트(줄바꿈)로 scenes 생성
+    - 변형이 없으면 기본 프롬프트 1개만 사용
+    - 변형이 여러 줄이면 각 줄마다 기본 프롬프트에 붙여서 하나의 장면으로 사용
+    """
+    scenes = []
+    base_prompt = base_prompt.strip()
+
+    if not base_prompt and not variants_text.strip():
+        return scenes
+
+    variant_lines = [ln.strip() for ln in variants_text.splitlines() if ln.strip()]
+
+    # 변형이 없으면 기본 프롬프트만 1개
+    if not variant_lines:
+        combined_prompt = base_prompt
+        scenes.append(
+            {
+                "id": 1,
+                "korean": base_prompt,
+                "prompt_en": combined_prompt,
+                "image_b64": None,
+            }
+        )
+        return scenes
+
+    # 변형이 있으면 기본 프롬프트 + 각 변형 조합으로 여러 장면 생성
+    for i, v in enumerate(variant_lines, start=1):
+        if base_prompt:
+            combined_prompt = f"{base_prompt}, {v}"
+        else:
+            combined_prompt = v
+
+        korean_block = base_prompt + ("\n" + v if base_prompt else v)
+
+        scenes.append(
+            {
+                "id": i,
+                "korean": korean_block,
+                "prompt_en": combined_prompt,
+                "image_b64": None,
+            }
+        )
+
+    return scenes
 
 # =========================
 # 사이드바
@@ -320,21 +286,6 @@ with st.sidebar:
         index=list(IMAGE_MODELS.keys()).index(
             st.session_state.get("image_model_label", "OpenAI gpt-image-1")
         ),
-    )
-
-    st.markdown("#### 🎨 스타일 프리셋")
-    st.session_state["style_preset"] = st.selectbox(
-        "스타일 선택",
-        list(STYLE_PRESETS.keys()),
-        index=list(STYLE_PRESETS.keys()).index(
-            st.session_state.get("style_preset", "다큐 + 스틱맨 설명 캐릭터")
-        ),
-    )
-
-    st.markdown("#### 🧍 캐릭터 고정")
-    st.session_state["lock_character"] = st.checkbox(
-        "2D 스틱맨 설명 캐릭터 항상 포함",
-        value=st.session_state.get("lock_character", True),
     )
 
     # === 이미지 옵션: disclosure 그룹 ===
@@ -384,20 +335,36 @@ st.markdown(
         </div>
         <div class="main-title">imageking</div>
         <div class="main-subtitle">
-            대본을 입력하고, 문장별 프롬프트를 기반으로 이미지를 벌크로 생성한 뒤,
-            장면들을 이어붙여 영상까지 자동으로 만들어보세요.
+            하나의 기본 이미지 프롬프트를 정해 두고,<br>
+            여러 가지 변형 프롬프트를 실험하면서 원하는 이미지를 찾아보세요.
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-raw_text = st.text_area(
-    "여기에 대본을 붙여넣으세요.",
-    height=260,
-    value=st.session_state.get("raw_script", ""),
-    placeholder="1\n한국어 문장… Shot on ...\n\n2\n한국어 문장… Shot on ...",
+# --- 기본 프롬프트 & 변형 리스트 입력 ---
+base_prompt = st.text_input(
+    "기본 이미지 프롬프트 (영어 권장)",
+    value=st.session_state.get("base_prompt", ""),
+    placeholder="예: A Korean woman in her 20s, standing in a neon-lit street at night, 50mm lens, cinematic framing",
 )
+
+variants_text = st.text_area(
+    "프롬프트 변형 리스트 (줄바꿈으로 구분)",
+    height=200,
+    value=st.session_state.get("prompt_variants_text", ""),
+    placeholder=(
+        "각 줄마다 다른 변형 요소를 적어보세요.\n"
+        "예)\n"
+        "cinematic lighting, moody atmosphere\n"
+        "sunset, orange and teal color grading\n"
+        "top-down view, 35mm lens\n"
+    ),
+)
+
+st.session_state["base_prompt"] = base_prompt
+st.session_state["prompt_variants_text"] = variants_text
 
 col_btn1, col_btn2 = st.columns(2)
 with col_btn1:
@@ -409,20 +376,19 @@ with col_btn2:
 # 이미지 생성 버튼 동작
 # =========================
 if clicked_generate:
-    if not raw_text.strip():
-        st.warning("대본을 먼저 입력해주세요.")
+    if not base_prompt.strip() and not variants_text.strip():
+        st.warning("기본 프롬프트 또는 변형 프롬프트를 하나 이상 입력해주세요.")
     else:
-        scenes = parse_script(raw_text)
+        scenes = build_scenes_from_prompt(base_prompt, variants_text)
         if not scenes:
-            st.error("대본 형식을 인식하지 못했습니다. 번호와 문장 형식을 다시 확인해주세요.")
+            st.error("프롬프트를 인식하지 못했습니다. 내용을 다시 확인해주세요.")
         else:
-            st.session_state["raw_script"] = raw_text
             st.session_state["scenes"] = scenes
 
             with st.spinner("이미지를 벌크로 생성 중입니다..."):
                 bulk_generate_images(st.session_state["scenes"], max_workers=4)
 
-            st.success("✅ 대본이 자동으로 분류되고 이미지가 생성되었습니다.")
+            st.success("✅ 프롬프트가 장면으로 분리되고 이미지가 생성되었습니다.")
             st.session_state["video_bytes"] = None
             st.session_state["video_error_msg"] = None
 
@@ -472,15 +438,15 @@ if clicked_video:
 # 결과 테이블 (스크롤 컨테이너)
 # =========================
 if scenes:
-    st.subheader("문장별 프롬프트 및 이미지")
+    st.subheader("프롬프트 변형별 이미지 결과")
 
     with st.container():
         st.markdown('<div class="results-container">', unsafe_allow_html=True)
 
         header_cols = st.columns([0.5, 2, 2, 1, 0.9])
         header_cols[0].markdown("**번호**")
-        header_cols[1].markdown("**원본문장**")
-        header_cols[2].markdown("**생성된 영어 프롬프트**")
+        header_cols[1].markdown("**기본 + 변형 프롬프트**")
+        header_cols[2].markdown("**최종 전달 프롬프트**")
         header_cols[3].markdown("**이미지**")
         header_cols[4].markdown("**조작**")
 
@@ -517,7 +483,7 @@ if scenes:
 
         st.markdown("</div>", unsafe_allow_html=True)
 else:
-    st.info("대본을 입력하고 **이미지 생성** 버튼을 눌러주세요.")
+    st.info("기본 프롬프트와 변형 프롬프트를 입력하고 **이미지 생성** 버튼을 눌러주세요.")
 
 # =========================
 # 생성된 영상 / 오류 표시
