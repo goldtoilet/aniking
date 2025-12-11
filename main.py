@@ -90,8 +90,6 @@ def get_env(key: str, default: str = "") -> str:
 
 
 GPT_API_KEY = get_env("GPT_API_KEY", "")
-LOGIN_ID_ENV = get_env("LOGIN_ID", "")
-LOGIN_PW_ENV = get_env("LOGIN_PW", "")
 
 if not GPT_API_KEY:
     st.error("❌ GPT_API_KEY 가 설정되어 있지 않습니다. .env 또는 환경변수를 확인해주세요.")
@@ -140,8 +138,6 @@ STYLE_PRESETS = {
 # =========================
 # 세션 상태 기본값
 # =========================
-st.session_state.setdefault("logged_in", False)
-st.session_state.setdefault("login_id", "")
 st.session_state.setdefault("scenes", [])
 st.session_state.setdefault("raw_script", "")
 
@@ -156,56 +152,6 @@ st.session_state.setdefault("video_model_label", "이미지 시퀀스 → MP4 (�
 st.session_state.setdefault("seconds_per_scene", 3.0)
 st.session_state.setdefault("video_bytes", None)
 st.session_state.setdefault("video_error_msg", None)
-
-# =========================
-# 로그인 화면
-# =========================
-def login_screen():
-    st.markdown("<br><br>", unsafe_allow_html=True)
-
-    st.markdown(
-        """
-        <div style="text-align:center;">
-            <div class="logo-badge">
-                <span class="emoji">🎬</span>
-                <span>AI Animation Maker</span>
-            </div>
-            <div class="main-title">로그인이 필요합니다</div>
-            <div class="main-subtitle">
-                등록된 계정으로 로그인 후 AI 애니메이션 메이커를 사용할 수 있습니다.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.write("")
-    st.write("")
-
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        user_id = st.text_input(
-            "아이디",
-            value=st.session_state.get("login_id", ""),
-            key="login_input_id",
-        )
-        pw = st.text_input("비밀번호", type="password", key="login_input_pw")
-
-        if st.button("로그인", type="primary", use_container_width=True):
-            if not LOGIN_ID_ENV or not LOGIN_PW_ENV:
-                st.error("서버에 로그인 정보(LOGIN_ID, LOGIN_PW)가 설정되어 있지 않습니다.")
-            elif user_id == LOGIN_ID_ENV and pw == LOGIN_PW_ENV:
-                st.session_state["logged_in"] = True
-                st.session_state["login_id"] = user_id
-                st.success("✅ 로그인 성공! 메인 화면으로 이동합니다.")
-                st.rerun()
-            else:
-                st.error("❌ 아이디 또는 비밀번호가 올바르지 않습니다.")
-
-
-if not st.session_state.get("logged_in", False):
-    login_screen()
-    st.stop()
 
 # =========================
 # 유틸 함수들
@@ -364,8 +310,7 @@ def create_video_from_scenes(
 # 사이드바
 # =========================
 with st.sidebar:
-    st.markdown("### 🎬 AI 애니메이션 메이커")
-    st.write(f"👤 로그인: **{st.session_state.get('login_id', '')}**")
+    st.markdown("### 🎬 IASA")
     st.markdown("---")
 
     st.markdown("#### 🖼 이미지 생성 모델")
@@ -392,47 +337,40 @@ with st.sidebar:
         value=st.session_state.get("lock_character", True),
     )
 
-    st.markdown("#### 🖼 이미지 옵션")
-    st.session_state["image_orientation"] = st.radio(
-        "비율 선택",
-        ["정사각형 1:1 (1024x1024)", "가로형 3:2 (1536x1024)", "세로형 2:3 (1024x1536)"],
-        index=["정사각형 1:1 (1024x1024)", "가로형 3:2 (1536x1024)", "세로형 2:3 (1024x1536)"].index(
-            st.session_state.get("image_orientation", "정사각형 1:1 (1024x1024)")
-        ),
-    )
+    # === 이미지 옵션: disclosure 그룹 ===
+    with st.expander("🖼 이미지 옵션", expanded=True):
+        st.session_state["image_orientation"] = st.radio(
+            "비율 선택",
+            ["정사각형 1:1 (1024x1024)", "가로형 3:2 (1536x1024)", "세로형 2:3 (1024x1536)"],
+            index=["정사각형 1:1 (1024x1024)", "가로형 3:2 (1536x1024)", "세로형 2:3 (1024x1536)"].index(
+                st.session_state.get("image_orientation", "정사각형 1:1 (1024x1024)")
+            ),
+        )
 
-    st.session_state["image_quality"] = st.radio(
-        "품질",
-        ["low", "high"],
-        index=["low", "high"].index(st.session_state.get("image_quality", "low")),
-        horizontal=True,
-    )
+        st.session_state["image_quality"] = st.radio(
+            "품질",
+            ["low", "high"],
+            index=["low", "high"].index(st.session_state.get("image_quality", "low")),
+            horizontal=True,
+        )
 
-    st.markdown("#### 🎥 영상 생성 옵션")
-    st.session_state["video_model_label"] = st.selectbox(
-        "영상 생성 모델",
-        list(VIDEO_MODELS.keys()),
-        index=list(VIDEO_MODELS.keys()).index(
-            st.session_state.get("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
-        ),
-    )
+    # === 영상 생성 옵션: disclosure 그룹 ===
+    with st.expander("🎥 영상 생성 옵션", expanded=True):
+        st.session_state["video_model_label"] = st.selectbox(
+            "영상 생성 모델",
+            list(VIDEO_MODELS.keys()),
+            index=list(VIDEO_MODELS.keys()).index(
+                st.session_state.get("video_model_label", "이미지 시퀀스 → MP4 (로컬 합성)")
+            ),
+        )
 
-    st.session_state["seconds_per_scene"] = st.slider(
-        "장면당 영상 길이 (초)",
-        min_value=1.0,
-        max_value=10.0,
-        value=float(st.session_state.get("seconds_per_scene", 3.0)),
-        step=0.5,
-    )
-
-    st.markdown("---")
-    if st.button("로그아웃"):
-        st.session_state["logged_in"] = False
-        st.session_state["scenes"] = []
-        st.session_state["raw_script"] = ""
-        st.session_state["video_bytes"] = None
-        st.session_state["video_error_msg"] = None
-        st.rerun()
+        st.session_state["seconds_per_scene"] = st.slider(
+            "장면당 영상 길이 (초)",
+            min_value=1.0,
+            max_value=10.0,
+            value=float(st.session_state.get("seconds_per_scene", 3.0)),
+            step=0.5,
+        )
 
 # =========================
 # 메인 UI
@@ -442,9 +380,9 @@ st.markdown(
     <div>
         <div class="logo-badge">
             <span class="emoji">🎬</span>
-            <span>AI Animation Maker</span>
+            <span>IASA</span>
         </div>
-        <div class="main-title">AI 애니메이션 메이커</div>
+        <div class="main-title">imageking</div>
         <div class="main-subtitle">
             대본을 입력하고, 문장별 프롬프트를 기반으로 이미지를 벌크로 생성한 뒤,
             장면들을 이어붙여 영상까지 자동으로 만들어보세요.
